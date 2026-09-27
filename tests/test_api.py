@@ -92,7 +92,7 @@ def private_key() -> rsa.RSAPrivateKey:
 def overrides(monkeypatch: pytest.MonkeyPatch, private_key: rsa.RSAPrivateKey):
     settings = Settings(
         supabase_url="https://project.supabase.co",
-        supabase_service_role_key="service-role-test-key",
+        supabase_secret_key="sb_secret_test",
         edge_hmac_secret=TEST_SECRET,
         supabase_jwt_issuer=TEST_ISSUER,
     )
@@ -126,6 +126,21 @@ def make_token(private_key: rsa.RSAPrivateKey, *, expired: bool = False) -> str:
         private_key,
         algorithm="RS256",
         headers={"kid": "test-key"},
+    )
+
+
+def make_hs256_token() -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": "user-123",
+            "aud": "authenticated",
+            "iss": TEST_ISSUER,
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+        },
+        "shared-secret-used-only-by-the-test",
+        algorithm="HS256",
     )
 
 
@@ -183,6 +198,34 @@ async def test_database_health_sanitizes_failures(client: AsyncClient):
 
 
 @pytest.mark.anyio
+async def test_database_health_identifies_missing_migrations(client: AsyncClient):
+    class MissingTableError(RuntimeError):
+        code = "PGRST205"
+        message = "Could not find the table public.media_metadata in the schema cache"
+
+    class MissingTableQuery(FakeQuery):
+        def execute(self) -> SimpleNamespace:
+            raise MissingTableError()
+
+    class MissingTableSupabase(FakeSupabase):
+        def __init__(self) -> None:
+            super().__init__()
+            self.query = MissingTableQuery([])
+
+    original_override = app.dependency_overrides[get_supabase_client]
+    app.dependency_overrides[get_supabase_client] = lambda: MissingTableSupabase()
+    try:
+        response = await client.get("/db-health")
+    finally:
+        app.dependency_overrides[get_supabase_client] = original_override
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Database schema is not initialized; run the Supabase migrations"
+    }
+
+
+@pytest.mark.anyio
 async def test_missing_bearer_token_is_rejected(client: AsyncClient):
     response = await client.get("/api/v1/archive-events")
     assert response.status_code == 401
@@ -207,6 +250,35 @@ async def test_mocked_jwks_verifies_valid_jwt(client: AsyncClient, private_key: 
     )
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.anyio
+async def test_hs256_token_is_validated_by_supabase_auth(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    class AuthResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"id": "user-123"}
+
+    captured_headers: dict[str, str] = {}
+
+    def fake_get(_: str, *, headers: dict[str, str], timeout: float) -> AuthResponse:
+        del timeout
+        captured_headers.update(headers)
+        return AuthResponse()
+
+    monkeypatch.setattr("app.auth.httpx.get", fake_get)
+    token = make_hs256_token()
+    response = await client.get(
+        "/api/v1/archive-events",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert captured_headers["apikey"] == "sb_secret_test"
+    assert captured_headers["Authorization"] == f"Bearer {token}"
 
 
 @pytest.mark.anyio

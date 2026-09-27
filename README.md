@@ -16,24 +16,21 @@ copy .env.example .env
 uvicorn app.main:app --reload
 ```
 
-Keep `SUPABASE_SERVICE_ROLE_KEY` and `EDGE_HMAC_SECRET` server-side. Create the
-table with:
+Keep `SUPABASE_SECRET_KEY` and `EDGE_HMAC_SECRET` server-side. Never place them
+in a browser, desktop client, or mobile application. A legacy
+`SUPABASE_SERVICE_ROLE_KEY` is also accepted during migration.
 
-```sql
-create table public.archive_events (
-  id uuid primary key,
-  asset_id uuid not null,
-  event_type text not null check (event_type in
-    ('discovered', 'indexed', 'uploaded', 'deleted', 'failed')),
-  device_id text not null,
-  occurred_at timestamptz not null,
-  metadata jsonb not null default '{}'::jsonb,
-  user_id text not null,
-  created_at timestamptz not null default now()
-);
-create index archive_events_user_time_idx
-  on public.archive_events (user_id, occurred_at desc);
+In the Supabase SQL Editor, run the migration files in numeric order:
+
+```text
+supabase/migrations/001_media_search.sql
+supabase/migrations/002_archive_events.sql
 ```
+
+Then start the API and request `GET /db-health`. A successful response is
+`{"status":"connected","database":"supabase"}`. If the migrations are missing,
+the endpoint reports that the schema is not initialized instead of masking the
+condition as a network error.
 
 ## API and signing
 
@@ -55,14 +52,16 @@ hex(HMAC-SHA256(EDGE_HMAC_SECRET, X-Edge-Timestamp + "." + raw_body))
 Send the digest in `X-Edge-Signature` as hex or `sha256=<hex>`. The timestamp is
 Unix seconds and must be within `EDGE_SIGNATURE_MAX_AGE_SECONDS`.
 
-Supabase calls and PyJWT's synchronous JWKS retrieval run in AnyIO worker
-threads. JWKS documents use a bounded TTL; per-key indefinite caching is off so
-key rotation continues to work.
+Supabase calls and synchronous JWT verification run in AnyIO worker threads.
+Asymmetric RS256, ES256, and EdDSA access tokens are verified from the JWKS
+endpoint. HS256 access tokens are verified through Supabase Auth, supporting
+legacy and shared-secret signing configurations without copying a signing
+secret into this service.
 
 ## Media search database
 
-Run [the media-search migration](supabase/migrations/001_media_search.sql) in the
-Supabase SQL Editor before using `/api/v1/media/*`. It enables pgvector, creates
+Run both migrations in the Supabase SQL Editor before using the API. The first
+enables pgvector, creates
 the metadata and face tables plus indexes, and installs two server-only RPCs.
 The synchronization RPC performs the metadata upsert and face replacement in a
 single transaction. A unique `(user_id, device_id, local_file_id)` constraint
@@ -82,3 +81,10 @@ pytest -q
 
 Tests use `httpx.AsyncClient`, a generated RSA key, mocked JWKS resolution, and
 an in-memory Supabase double. They require no network or real project.
+
+To run the opt-in smoke test against the project configured in `.env`:
+
+```powershell
+$env:RUN_SUPABASE_INTEGRATION="1"
+pytest -q tests/test_supabase_integration.py
+```

@@ -1,23 +1,33 @@
 """Typed application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic import AnyHttpUrl, Field, SecretStr, computed_field
+from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Settings(BaseSettings):
     """Runtime settings, loaded from the environment or a local .env file."""
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
+        env_file=_PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+        populate_by_name=True,
     )
 
     app_name: str = "Media Archive Cloud API"
     app_environment: str = "development"
     debug: bool = False
     supabase_url: AnyHttpUrl | None = None
-    supabase_service_role_key: SecretStr | None = None
+    supabase_secret_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY"),
+    )
     supabase_jwt_audience: str = "authenticated"
     supabase_jwt_issuer: str | None = None
     jwks_cache_lifespan_seconds: int = Field(default=300, gt=0)

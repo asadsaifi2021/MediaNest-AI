@@ -1,20 +1,26 @@
 """HTTP routes for cloud archive coordination and media search."""
 
+import logging
 import math
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
-from supabase import Client, create_client
 
 from .auth import CurrentUser, verify_edge_signature
 from .config import Settings, get_settings
+from .database import (
+    InvalidSupabaseKey,
+    SupabaseQueryClient,
+    create_data_api_client,
+    database_error_detail,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ArchiveEventCreate(BaseModel):
@@ -134,21 +140,20 @@ class FaceSearchResponse(BaseModel):
     matches: list[FaceMatch]
 
 
-@lru_cache(maxsize=4)
-def _create_supabase_client(url: str, key: str) -> Client:
-    return create_client(url, key)
-
-
 async def get_supabase_client(
     settings: Annotated[Settings, Depends(get_settings)],
-) -> Client:
-    if settings.supabase_url is None or settings.supabase_service_role_key is None:
+) -> SupabaseQueryClient:
+    if settings.supabase_url is None or settings.supabase_secret_key is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
-    return await to_thread.run_sync(
-        _create_supabase_client,
-        str(settings.supabase_url).rstrip("/"),
-        settings.supabase_service_role_key.get_secret_value(),
-    )
+    try:
+        return await to_thread.run_sync(
+            create_data_api_client,
+            str(settings.supabase_url).rstrip("/"),
+            settings.supabase_secret_key.get_secret_value(),
+        )
+    except InvalidSupabaseKey as exc:
+        logger.error("Invalid Supabase server key configuration: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
@@ -158,7 +163,7 @@ async def health(settings: Annotated[Settings, Depends(get_settings)]) -> Health
 
 @router.get("/db-health", response_model=DatabaseHealthResponse, tags=["system"])
 async def database_health(
-    client: Annotated[Client, Depends(get_supabase_client)],
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
 ) -> DatabaseHealthResponse:
     """Check that the configured Supabase Data API can answer a small query."""
 
@@ -168,14 +173,15 @@ async def database_health(
     try:
         await to_thread.run_sync(check_connection)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Database connection unavailable") from exc
+        logger.exception("Supabase database health check failed")
+        raise HTTPException(status_code=503, detail=database_error_detail(exc)) from exc
     return DatabaseHealthResponse()
 
 
 @router.get("/api/v1/archive-events", response_model=list[ArchiveEvent], tags=["archive"])
 async def list_archive_events(
     user: CurrentUser,
-    client: Annotated[Client, Depends(get_supabase_client)],
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> list[dict[str, Any]]:
     def query() -> list[dict[str, Any]]:
@@ -201,7 +207,7 @@ async def list_archive_events(
 async def create_archive_event(
     event: ArchiveEventCreate,
     user: CurrentUser,
-    client: Annotated[Client, Depends(get_supabase_client)],
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
 ) -> dict[str, Any]:
     record = {
         **event.model_dump(mode="json"),
@@ -230,7 +236,7 @@ async def create_archive_event(
 async def sync_media(
     payload: MediaSyncRequest,
     user: CurrentUser,
-    client: Annotated[Client, Depends(get_supabase_client)],
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
 ) -> MediaSyncResponse:
     """Atomically upsert media metadata and replace its face embeddings."""
 
@@ -263,7 +269,7 @@ async def sync_media(
 )
 async def search_media_by_tag(
     user: CurrentUser,
-    client: Annotated[Client, Depends(get_supabase_client)],
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
     tag: Annotated[str, Query(min_length=1, max_length=100)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -298,7 +304,7 @@ async def search_media_by_tag(
 async def search_media_by_face(
     query: VectorSearchRequest,
     user: CurrentUser,
-    client: Annotated[Client, Depends(get_supabase_client)],
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> FaceSearchResponse:
     params = {

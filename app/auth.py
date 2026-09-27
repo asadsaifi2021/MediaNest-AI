@@ -6,6 +6,7 @@ import time
 from functools import lru_cache
 from typing import Annotated, Any
 
+import httpx
 import jwt
 from anyio import to_thread
 from fastapi import Depends, HTTPException, Request, status
@@ -22,6 +23,10 @@ from jwt.exceptions import (
 from .config import Settings, get_settings
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class IdentityProviderUnavailable(RuntimeError):
+    """Raised when a token cannot be checked because Supabase Auth is unavailable."""
 
 
 def _unauthorized(detail: str) -> HTTPException:
@@ -55,16 +60,61 @@ def get_jwks_client(settings: Settings) -> PyJWKClient:
 
 
 def _decode_token(token: str, settings: Settings) -> dict[str, Any]:
-    """Resolve the signing key and decode a token in a worker thread."""
+    """Resolve an asymmetric signing key and decode a token."""
     signing_key = get_jwks_client(settings).get_signing_key_from_jwt(token)
     return jwt.decode(
         token,
         signing_key.key,
-        algorithms=["RS256", "ES256"],
+        algorithms=["RS256", "ES256", "EdDSA"],
         audience=settings.supabase_jwt_audience,
         issuer=settings.jwt_issuer,
         options={"require": ["exp", "iat", "sub"]},
     )
+
+
+def _validate_shared_secret_token(token: str, settings: Settings) -> dict[str, Any]:
+    """Validate HS256 access tokens through Supabase Auth without exposing its secret."""
+    if settings.supabase_url is None or settings.supabase_secret_key is None:
+        raise IdentityProviderUnavailable("Shared-secret JWT verification is not configured")
+    try:
+        response = httpx.get(
+            f"{str(settings.supabase_url).rstrip('/')}/auth/v1/user",
+            headers={
+                "apikey": settings.supabase_secret_key.get_secret_value(),
+                "Authorization": f"Bearer {token}",
+            },
+            timeout=settings.jwks_request_timeout_seconds,
+        )
+    except httpx.RequestError as exc:
+        raise IdentityProviderUnavailable("Unable to reach Supabase Auth") from exc
+    if response.status_code != 200:
+        raise InvalidTokenError("Supabase Auth rejected the token")
+
+    claims = jwt.decode(
+        token,
+        options={
+            "verify_signature": False,
+            "verify_exp": True,
+            "verify_iat": True,
+            "verify_aud": True,
+            "verify_iss": True,
+            "require": ["exp", "iat", "sub"],
+        },
+        audience=settings.supabase_jwt_audience,
+        issuer=settings.jwt_issuer,
+    )
+    if response.json().get("id") != claims["sub"]:
+        raise InvalidTokenError("Authenticated user does not match the token subject")
+    return claims
+
+
+def _verify_token(token: str, settings: Settings) -> dict[str, Any]:
+    algorithm = jwt.get_unverified_header(token).get("alg")
+    if algorithm == "HS256":
+        return _validate_shared_secret_token(token, settings)
+    if algorithm not in {"RS256", "ES256", "EdDSA"}:
+        raise InvalidTokenError("Unsupported JWT signing algorithm")
+    return _decode_token(token, settings)
 
 
 async def verify_supabase_jwt(
@@ -76,10 +126,12 @@ async def verify_supabase_jwt(
     if settings.jwt_issuer is None:
         raise HTTPException(status_code=503, detail="JWT verification is not configured")
     try:
-        return await to_thread.run_sync(_decode_token, credentials.credentials, settings)
+        return await to_thread.run_sync(_verify_token, credentials.credentials, settings)
     except ExpiredSignatureError as exc:
         raise _unauthorized("Token has expired") from exc
     except PyJWKClientConnectionError as exc:
+        raise HTTPException(status_code=503, detail="Unable to reach the identity provider") from exc
+    except IdentityProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail="Unable to reach the identity provider") from exc
     except (InvalidTokenError, PyJWKClientError, PyJWKError, ValueError) as exc:
         raise _unauthorized("Invalid bearer token") from exc
