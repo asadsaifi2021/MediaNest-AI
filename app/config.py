@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
-    app_name: str = "Media Archive Cloud API"
+    app_name: str = "MediaNest AI"
     app_environment: str = "development"
     debug: bool = False
     supabase_url: AnyHttpUrl | None = None

@@ -1,4 +1,35 @@
-# Media Archive Cloud API
+# MediaNest AI
+
+Your media. Your storage. Easily found.
+
+MediaNest AI is a planned React application for organizing and searching photos,
+videos, and audio while keeping all media files on the owner's local storage.
+Android, Windows, and web access will start with a responsive React PWA.
+
+## Product boundaries
+
+- Originals, thumbnails, and converted playback files stay on the local NAS.
+- The server stores searchable metadata, tags, transcripts, face vectors,
+  ownership, and references to storage objects.
+- Browsers transfer media directly to an authorized local storage service.
+- AI indexing runs on the local server, not in the cloud API or React frontend.
+- The first deployment targets personal/family use over Tailscale.
+- Minimize recurring costs; do not assume cloud free tiers last forever.
+
+## Current status
+
+This repository currently contains the FastAPI metadata backend inherited from
+[Noor Saifi's Media Archive Cloud API](https://github.com/noorsaifi/media-archive-cloud-api),
+including the Supabase integration changes. Original copyright and Git history
+are preserved. React, the storage service, and the AI worker are not implemented yet.
+Live Supabase connectivity is not verified without project credentials.
+
+See [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md) before
+adding features. The existing thumbnail URL field is metadata only; future
+storage integration should use stable node/object references and temporary
+authorized URLs, not cloud-hosted thumbnails.
+
+## Metadata backend
 
 FastAPI backend for a hybrid media archive. Edge devices authenticate a user
 with a Supabase JWT and sign mutation bodies with a shared HMAC secret. The API
@@ -43,7 +74,8 @@ condition as a network error.
 - `GET /api/v1/media/search?tag=...` — paginated, user-scoped tag search.
 - `POST /api/v1/media/search-face` — user-scoped cosine-similarity search.
 
-POST requests are signed over the exact transmitted bytes:
+Mutation requests to archive-events and media/sync are signed over the exact
+transmitted bytes (search-face does not require an edge signature):
 
 ```text
 hex(HMAC-SHA256(EDGE_HMAC_SECRET, X-Edge-Timestamp + "." + raw_body))

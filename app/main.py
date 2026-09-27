@@ -9,7 +9,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version="0.2.0",
-    description="Secure media metadata synchronization and similarity search API.",
+    description="MediaNest AI metadata API for a private, locally stored media archive.",
     debug=settings.debug,
     docs_url="/docs" if settings.app_environment != "production" else None,
     redoc_url="/redoc" if settings.app_environment != "production" else None,

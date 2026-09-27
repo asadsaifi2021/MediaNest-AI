@@ -163,7 +163,7 @@ async def test_health(client: AsyncClient):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "service": "Media Archive Cloud API",
+        "service": "MediaNest AI",
         "environment": "development",
     }
 
