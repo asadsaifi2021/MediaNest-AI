@@ -32,7 +32,7 @@ create index if not exists media_metadata_tags_idx
 create index if not exists face_embeddings_user_idx
   on public.face_embeddings (user_id);
 create index if not exists face_embeddings_vector_idx
-  on public.face_embeddings using hnsw (embedding vector_cosine_ops);
+  on public.face_embeddings using hnsw (embedding extensions.vector_cosine_ops);
 
 alter table public.media_metadata enable row level security;
 alter table public.face_embeddings enable row level security;
@@ -109,11 +109,11 @@ as $$
     face.id as face_id,
     face.media_id,
     face.person_name,
-    1 - (face.embedding <=> query_embedding) as similarity
+    1 - (face.embedding operator(extensions.<=>) query_embedding) as similarity
   from public.face_embeddings as face
   where face.user_id = p_user_id
-    and 1 - (face.embedding <=> query_embedding) >= match_threshold
-  order by face.embedding <=> query_embedding
+    and 1 - (face.embedding operator(extensions.<=>) query_embedding) >= match_threshold
+  order by face.embedding operator(extensions.<=>) query_embedding
   limit least(greatest(match_count, 1), 100);
 $$;
 

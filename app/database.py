@@ -67,7 +67,9 @@ def database_error_detail(exc: Exception) -> str:
     """Return a useful but non-sensitive readiness error for known failures."""
     code = getattr(exc, "code", None)
     message = str(getattr(exc, "message", exc)).lower()
-    if code in {"42P01", "PGRST205"} or "could not find the table" in message:
+    if code in {"42P01", "42703", "42883", "PGRST202", "PGRST204", "PGRST205"}:
+        return "Database schema is not initialized; run the Supabase migrations"
+    if "could not find the table" in message:
         return "Database schema is not initialized; run the Supabase migrations"
     if code in {"PGRST301", "PGRST302"} or "invalid jwt" in message or "api key" in message:
         return "Supabase credentials were rejected"

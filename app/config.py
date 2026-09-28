@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     app_name: str = "MediaNest AI"
     app_environment: str = "development"
     debug: bool = False
+    cors_origins: list[str] = Field(default_factory=lambda: [
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ])
     supabase_url: AnyHttpUrl | None = None
     supabase_secret_key: SecretStr | None = Field(
         default=None,
@@ -35,6 +38,8 @@ class Settings(BaseSettings):
     edge_hmac_secret: SecretStr | None = None
     edge_signature_max_age_seconds: int = Field(default=300, gt=0)
     face_match_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    local_node_id: str | None = None
+    local_node_secret: SecretStr | None = None
 
     @computed_field
     @property

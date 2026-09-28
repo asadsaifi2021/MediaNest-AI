@@ -49,6 +49,9 @@ class DatabaseHealthResponse(BaseModel):
 
 
 class FaceEmbeddingIngest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    model_id: str = Field(default="legacy-512", min_length=1, max_length=128)
     person_name: str | None = Field(default=None, max_length=200)
     embedding: list[float]
     vector_version: int = Field(default=1, ge=1)
@@ -60,6 +63,8 @@ class FaceEmbeddingIngest(BaseModel):
             raise ValueError("embedding must contain exactly 512 values")
         if not all(math.isfinite(component) for component in value):
             raise ValueError("embedding values must be finite")
+        if not any(component != 0 for component in value):
+            raise ValueError("embedding must not be a zero vector")
         return value
 
 
@@ -99,6 +104,8 @@ class VectorSearchRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     embedding: list[float]
+    model_id: str = Field(default="legacy-512", min_length=1, max_length=128)
+    vector_version: int = Field(default=1, ge=1)
     limit: int = Field(default=20, ge=1, le=100)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
@@ -125,6 +132,10 @@ class MediaRecord(BaseModel):
 
 class MediaSearchResponse(BaseModel):
     results: list[MediaRecord]
+
+
+class MediaPage(MediaSearchResponse):
+    has_more: bool
 
 
 class FaceMatch(BaseModel):
@@ -169,6 +180,13 @@ async def database_health(
 
     def check_connection() -> None:
         client.table("media_metadata").select("id").limit(1).execute()
+        client.table("archive_events").select("id").limit(1).execute()
+        client.table("face_embeddings").select("id,model_id").limit(1).execute()
+        client.rpc("match_faces_v2", {
+            "query_embedding": [1.0] + [0.0] * 511,
+            "match_threshold": 1.0, "match_count": 1,
+            "p_user_id": "00000000-0000-0000-0000-000000000000",
+        }).execute()
 
     try:
         await to_thread.run_sync(check_connection)
@@ -314,12 +332,67 @@ async def search_media_by_face(
         ),
         "match_count": query.limit,
         "p_user_id": user["sub"],
+        "p_model_id": query.model_id,
+        "p_vector_version": query.vector_version,
     }
 
     def execute() -> list[dict[str, Any]]:
-        return client.rpc("match_faces", params).execute().data
+        return client.rpc("match_faces_v2", params).execute().data
 
     try:
         return FaceSearchResponse(matches=await to_thread.run_sync(execute))
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Face search failed") from exc
+
+
+@router.get("/api/v1/media", response_model=MediaPage, tags=["media"])
+async def list_media(
+    user: CurrentUser,
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 24,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    file_type: Literal["image", "video", "audio"] | None = None,
+    tag: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    sort: Literal["newest", "oldest"] = "newest",
+) -> MediaPage:
+    if tag is not None and not tag.strip():
+        raise HTTPException(status_code=422, detail="Tag cannot be blank")
+
+    def execute() -> list[dict[str, Any]]:
+        query = client.table("media_metadata").select("*").eq("user_id", user["sub"])
+        if file_type:
+            query = query.eq("file_type", file_type)
+        if tag:
+            query = query.contains("tags", [tag.strip()])
+        return (
+            query.order("created_at", desc=sort == "newest")
+            .order("id", desc=sort == "newest")
+            .range(offset, offset + limit).execute().data
+        )
+
+    try:
+        rows = await to_thread.run_sync(execute)
+        return MediaPage(results=rows[:limit], has_more=len(rows) > limit)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Media library request failed") from exc
+
+
+@router.get("/api/v1/media/{media_id}", response_model=MediaRecord, tags=["media"])
+async def get_media(
+    media_id: UUID,
+    user: CurrentUser,
+    client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)],
+) -> MediaRecord:
+    def execute() -> list[dict[str, Any]]:
+        return (
+            client.table("media_metadata").select("*")
+            .eq("user_id", user["sub"]).eq("id", str(media_id)).limit(1).execute().data
+        )
+
+    try:
+        rows = await to_thread.run_sync(execute)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Media detail request failed") from exc
+    if not rows:
+        raise HTTPException(status_code=404, detail="Media not found")
+    return MediaRecord(**rows[0])

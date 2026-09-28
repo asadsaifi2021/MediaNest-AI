@@ -7,3 +7,4 @@ anyio>=4.9,<5.0
 truststore>=0.10,<1.0
 httpx>=0.28,<1.0
 pytest>=8.4,<9.0
+Pillow>=11.3,<13.0

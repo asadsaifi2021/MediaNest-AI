@@ -21,3 +21,11 @@ def test_live_supabase_data_api() -> None:
     )
     response = client.table("media_metadata").select("id").limit(1).execute()
     assert isinstance(response.data, list)
+    for table, columns in (("archive_events", "id"), ("face_embeddings", "id,model_id")):
+        assert isinstance(client.table(table).select(columns).limit(1).execute().data, list)
+    response = client.rpc("match_faces_v2", {
+        "query_embedding": [1.0] + [0.0] * 511,
+        "match_threshold": 1.0, "match_count": 1,
+        "p_user_id": "00000000-0000-0000-0000-000000000000",
+    }).execute()
+    assert isinstance(response.data, list)

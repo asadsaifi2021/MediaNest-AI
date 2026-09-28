@@ -20,4 +20,12 @@ htmlcov/
 dist/
 build/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/settings.json
+test-results/
+playwright-report/
+supabase/.temp/
+supabase/.branches/
+local_storage/.env
+local-media/

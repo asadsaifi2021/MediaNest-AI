@@ -1,0 +1,12 @@
+{
+  "name": "medianest-database-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/schema.test.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite-pgvector": "0.0.9"
+  }
+}

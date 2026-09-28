@@ -9,18 +9,35 @@
 
 ## 2. React foundation
 
-- [ ] Scaffold React + TypeScript with Vite.
-- [ ] Add responsive navigation, gallery layout, and an API client.
-- [ ] Add Supabase login and authenticated metadata requests.
-- [ ] Verify login and ownership behavior with two users.
+- [x] Scaffold React + TypeScript with Vite.
+- [x] Add responsive navigation, gallery layout, and an API client.
+- [x] Add Supabase login and authenticated metadata requests.
+- [x] Verify mocked login/account switching in desktop and mobile browser tests,
+  and owner-scoped backend queries with two test users.
+- [ ] Verify two real Supabase users against a configured project.
+- [x] Implement signup, email confirmation, resend, password recovery, and
+  session restoration with automated browser verification.
+- [ ] Verify real confirmation/reset email delivery and dashboard redirect URLs.
+- [x] Implement Account settings for display name, email changes, password
+  updates and local/other-session signout, with desktop/mobile tests.
 
 ## 3. First working media flow
 
-- [ ] Register a local storage node and define storage-reference records.
-- [ ] Implement scoped upload/access authorization.
-- [ ] Upload one photo directly to the local service.
-- [ ] Generate a local thumbnail and synchronize metadata.
-- [ ] Display that thumbnail in React and handle NAS-offline status.
+- [x] Implement and locally test Supabase ownership constraints, atomic metadata
+  sync, model/version-isolated vector search, and server-only database grants.
+- [x] Prepare a fresh-project SQL bundle and Supabase setup guide.
+- [x] Create the hosted Supabase project, apply migrations 001–003, and verify
+  database readiness. User confirmed sign-in works.
+
+- [x] Implement owner-scoped storage registration and storage-reference records;
+  tested locally. This is not authenticated device enrollment.
+- [x] Apply migration 004 to the hosted project; user confirmed registration.
+- [x] Implement node-specific, short-lived upload/read grants and online revocation checks.
+- [x] Implement and locally test one-photo uploads, local thumbnails, metadata
+  completion retries, and authenticated gallery previews.
+- [x] User confirmed the first photo upload, thumbnail and original view work
+  against hosted Supabase and the running PC service.
+- [x] Display thumbnails in React and show a fallback when storage is unavailable.
 
 ## 4. Reliable archive
 

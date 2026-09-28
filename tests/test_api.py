@@ -22,6 +22,94 @@ TEST_SECRET = "test-edge-secret"
 TEST_ISSUER = "https://project.supabase.co/auth/v1"
 
 
+@pytest.mark.anyio
+async def test_storage_registration_is_owner_scoped(client, private_key):
+    from app.storage import COLUMNS
+
+    records = []
+
+    class NodeQuery(FakeQuery):
+        changes = None
+
+        def update(self, changes):
+            self.changes = changes
+            return self
+
+        def execute(self):
+            if self.inserted:
+                records.append({
+                    **self.inserted, "id": str(uuid4()), "created_at": "2026-09-27T00:00:00Z",
+                    "disabled_at": None,
+                })
+                return SimpleNamespace(data=[records[-1]])
+            rows = [r for r in records if all(r[k] == v for k, v in self.filters)]
+            if self.changes:
+                for row in rows:
+                    row.update(self.changes)
+            return SimpleNamespace(data=[{k: r[k] for k in COLUMNS.split(",")} for r in rows])
+
+    class Nodes:
+        def table(self, name):
+            assert name == "storage_nodes"
+            return NodeQuery([])
+
+    app.dependency_overrides[get_supabase_client] = lambda: Nodes()
+    alice = {"Authorization": f"Bearer {make_token(private_key, subject='alice')}"}
+    bob = {"Authorization": f"Bearer {make_token(private_key, subject='bob')}"}
+    payload = {
+        "device_id": "windows-pc", "display_name": " My PC ",
+        "base_url": "http://127.0.0.1:8100/",
+    }
+    assert (await client.post("/api/v1/storage-nodes", json=payload)).status_code == 401
+    created = await client.post("/api/v1/storage-nodes", headers=alice, json=payload)
+    assert created.status_code == 201
+    assert created.json()["display_name"] == "My PC"
+    assert created.json()["base_url"] == "http://127.0.0.1:8100"
+    assert records[0]["user_id"] == "alice"
+    assert "user_id" not in created.json()
+    assert len((await client.get("/api/v1/storage-nodes", headers=alice)).json()) == 1
+    assert (await client.get("/api/v1/storage-nodes", headers=bob)).json() == []
+    endpoint = f"/api/v1/storage-nodes/{created.json()['id']}/disable"
+    assert (await client.post(endpoint, headers=bob)).status_code == 404
+    assert records[0]["disabled_at"] is None
+    assert (await client.post(endpoint, headers=alice)).status_code == 200
+    assert records[0]["disabled_at"] is not None
+    assert len(records) == 1
+    assert (await client.post(
+        "/api/v1/storage-nodes", headers=alice, json={**payload, "user_id": "bob"}
+    )).status_code == 422
+
+
+@pytest.mark.parametrize("origin", [
+    "file:///C:/photos", "http://192.168.1.10:8100", "https://user:password@nas.test",
+    "https://nas.test/files", "https://nas.test?token=secret", "https://nas.test/#secret",
+    "https://nas.test:99999", "https://nas.test:0", "https://nas.test\\evil",
+])
+def test_storage_origins_reject_unsafe_values(origin):
+    from pydantic import ValidationError
+
+    from app.storage import StorageNodeCreate
+
+    with pytest.raises(ValidationError):
+        StorageNodeCreate(device_id="pc", display_name="PC", base_url=origin)
+
+
+@pytest.mark.anyio
+async def test_storage_missing_migration_is_actionable(client, private_key):
+    class MissingTable(RuntimeError):
+        code = "PGRST205"
+
+    class MissingRegistry:
+        def table(self, name):
+            raise MissingTable()
+
+    app.dependency_overrides[get_supabase_client] = lambda: MissingRegistry()
+    headers = {"Authorization": f"Bearer {make_token(private_key)}"}
+    result = await client.get("/api/v1/storage-nodes", headers=headers)
+    assert result.status_code == 503
+    assert "migration 004" in result.json()["detail"]
+
+
 class FakeQuery:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
@@ -113,11 +201,13 @@ async def client():
         yield value
 
 
-def make_token(private_key: rsa.RSAPrivateKey, *, expired: bool = False) -> str:
+def make_token(
+    private_key: rsa.RSAPrivateKey, *, expired: bool = False, subject: str = "user-123"
+) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
-            "sub": "user-123",
+            "sub": subject,
             "aud": "authenticated",
             "iss": TEST_ISSUER,
             "iat": now,
@@ -418,9 +508,45 @@ async def test_face_search_scopes_rpc_to_authenticated_user(
     )
     assert response.status_code == 200
     rpc_name, params = overrides.rpc_calls[-1]
-    assert rpc_name == "match_faces"
+    assert rpc_name == "match_faces_v2"
+    assert params["p_model_id"] == "legacy-512"
+    assert params["p_vector_version"] == 1
     assert params["p_user_id"] == "user-123"
     assert params["match_count"] == 5
+
+
+@pytest.mark.anyio
+async def test_face_search_validates_vector_and_passes_model(
+    client: AsyncClient, private_key: rsa.RSAPrivateKey, overrides: FakeSupabase
+):
+    headers = {"Authorization": f"Bearer {make_token(private_key)}"}
+    response = await client.post("/api/v1/media/search-face", headers=headers, json={
+        "embedding": [0.0] * 512,
+    })
+    assert response.status_code == 422
+    response = await client.post("/api/v1/media/search-face", headers=headers, json={
+        "embedding": [0.01] * 512, "model_id": "chosen-model", "vector_version": 2,
+    })
+    assert response.status_code == 200
+    assert overrides.rpc_calls[-1][1]["p_model_id"] == "chosen-model"
+    assert overrides.rpc_calls[-1][1]["p_vector_version"] == 2
+
+
+@pytest.mark.anyio
+async def test_readiness_requires_latest_search_function(client: AsyncClient):
+    class MissingFunctionError(RuntimeError):
+        code = "PGRST202"
+
+    class OldSchema(FakeSupabase):
+        def rpc(self, name: str, params: dict[str, Any]) -> FakeRpc:
+            raise MissingFunctionError()
+
+    app.dependency_overrides[get_supabase_client] = lambda: OldSchema()
+    response = await client.get("/db-health")
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Database schema is not initialized; run the Supabase migrations"
+    )
 
 
 @pytest.mark.anyio
@@ -436,3 +562,76 @@ async def test_tag_search_filters_authenticated_user(
     assert response.status_code == 200
     assert ("user_id", "user-123") in overrides.query.filters
     assert ("tags", ["Family"]) in overrides.query.filters
+
+
+@pytest.mark.anyio
+async def test_gallery_and_details_isolate_two_users(
+    client: AsyncClient, private_key: rsa.RSAPrivateKey
+):
+    records = [
+        {
+            "id": str(uuid4()), "user_id": owner, "device_id": "nas",
+            "local_file_id": owner + ".jpg", "file_type": "image", "tags": ["Family"],
+            "created_at": "2026-09-01T00:00:00Z", "updated_at": "2026-09-01T00:00:00Z",
+        }
+        for owner in ("alice", "bob")
+    ]
+
+    class ScopedQuery(FakeQuery):
+        def execute(self) -> SimpleNamespace:
+            rows = self.rows
+            for key, value in self.filters:
+                rows = [row for row in rows if row[key] == value]
+            return SimpleNamespace(data=rows)
+
+    class ScopedClient:
+        def table(self, _: str) -> ScopedQuery:
+            return ScopedQuery(records)
+
+    app.dependency_overrides[get_supabase_client] = lambda: ScopedClient()
+    for owner in ("alice", "bob"):
+        headers = {"Authorization": f"Bearer {make_token(private_key, subject=owner)}"}
+        response = await client.get("/api/v1/media", headers=headers)
+        assert response.status_code == 200
+        assert [row["user_id"] for row in response.json()["results"]] == [owner]
+        own = next(row for row in records if row["user_id"] == owner)
+        other = next(row for row in records if row["user_id"] != owner)
+        assert (await client.get(f"/api/v1/media/{own['id']}", headers=headers)).status_code == 200
+        assert (await client.get(f"/api/v1/media/{other['id']}", headers=headers)).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_gallery_pagination_filters_and_validation(
+    client: AsyncClient, private_key: rsa.RSAPrivateKey, overrides: FakeSupabase
+):
+    overrides.query.rows = [
+        {
+            "id": str(uuid4()), "user_id": "user-123", "device_id": "nas",
+            "local_file_id": str(i), "file_type": "image",
+            "created_at": "2026-09-01T00:00:00Z", "updated_at": "2026-09-01T00:00:00Z",
+        } for i in range(3)
+    ]
+    headers = {"Authorization": f"Bearer {make_token(private_key)}"}
+    result = await client.get("/api/v1/media?limit=2&file_type=image&tag=Family", headers=headers)
+    assert result.status_code == 200
+    assert len(result.json()["results"]) == 2
+    assert result.json()["has_more"] is True
+    assert ("file_type", "image") in overrides.query.filters
+    assert ("tags", ["Family"]) in overrides.query.filters
+    for query in ("limit=0", "offset=-1", "file_type=invalid", "tag=%20", "sort=invalid"):
+        assert (await client.get("/api/v1/media?" + query, headers=headers)).status_code == 422
+    assert (await client.get("/api/v1/media")).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_cors_allows_local_frontend_but_not_untrusted_origins(client: AsyncClient):
+    for origin, expected in (("http://127.0.0.1:5173", 200), ("https://untrusted.test", 400)):
+        response = await client.options("/api/v1/media", headers={
+            "Origin": origin, "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        })
+        assert response.status_code == expected
+        if expected == 200:
+            assert response.headers["access-control-allow-origin"] == origin
+        else:
+            assert "access-control-allow-origin" not in response.headers
