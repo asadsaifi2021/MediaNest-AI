@@ -20,8 +20,14 @@ export function validatePublicConfig(url: string, key: string): string | null {
   }
   return null;
 }
-export const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? "";
-export const publicKey =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ?? "";
+export const demoOnly = import.meta.env.VITE_DEMO_ONLY === "true";
+export const supabaseUrl = demoOnly
+  ? ""
+  : (import.meta.env.VITE_SUPABASE_URL?.trim() ?? "");
+export const publicKey = demoOnly
+  ? ""
+  : (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ?? "");
 export const configIssue = validatePublicConfig(supabaseUrl, publicKey);
-export const apiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+export const apiUrl = demoOnly
+  ? ""
+  : (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");

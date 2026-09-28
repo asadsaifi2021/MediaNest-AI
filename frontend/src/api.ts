@@ -1,4 +1,4 @@
-import { apiUrl } from "./config";
+import { apiUrl, demoOnly } from "./config";
 
 export class ApiError extends Error {
   constructor(
@@ -13,6 +13,8 @@ export async function request<T>(
   token?: string,
   options: RequestInit = {},
 ): Promise<T> {
+  if (demoOnly)
+    throw new Error("Server access is disabled in the public demo.");
   const controller = new AbortController();
   const cancel = () => controller.abort();
   if (options.signal?.aborted) controller.abort();

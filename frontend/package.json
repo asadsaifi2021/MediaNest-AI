@@ -14,6 +14,7 @@
     "test": "vitest run tests/unit",
     "test:e2e": "playwright test",
     "test:pwa": "node scripts/check-pwa.mjs",
+    "test:demo": "node scripts/check-pwa.mjs --demo",
     "format": "prettier --write src tests *.ts *.json index.html",
     "format:check": "prettier --check src tests *.ts *.json index.html"
   },

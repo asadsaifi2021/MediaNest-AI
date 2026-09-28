@@ -28,6 +28,7 @@ import { useAuth } from "./auth";
 import { AuthScreen } from "./auth-pages";
 import { Account } from "./account";
 import { request } from "./api";
+import { demoOnly } from "./config";
 import { ErrorBox } from "./components";
 import { Library, Faces, ActivityPage, Connections } from "./pages";
 
@@ -49,6 +50,7 @@ export default function App() {
   const location = useLocation();
   const health = useQuery({
     queryKey: ["health"],
+    enabled: !demoOnly,
     queryFn: ({ signal }) =>
       request<{ status: string }>("/health", undefined, { signal }),
     refetchInterval: 60000,
@@ -60,6 +62,8 @@ export default function App() {
         <p>Opening your nest…</p>
       </div>
     );
+  if (demoOnly && location.pathname.startsWith("/auth/"))
+    return <Navigate to="/" replace />;
   if (
     [
       "/auth/callback",
@@ -132,6 +136,7 @@ export default function App() {
           </div>
           <button
             className="account-button"
+            disabled={demoOnly}
             onClick={() => {
               setMenu(false);
               if (auth.preview) auth.leavePreview();
@@ -152,7 +157,13 @@ export default function App() {
                       auth.session.user.user_metadata.full_name) ||
                     auth.session?.user.email}
               </strong>
-              <small>{auth.preview ? "Exit preview" : "Sign out"}</small>
+              <small>
+                {demoOnly
+                  ? "No account required"
+                  : auth.preview
+                    ? "Exit preview"
+                    : "Sign out"}
+              </small>
             </span>
             <LogOut size={17} />
           </button>
@@ -185,23 +196,28 @@ export default function App() {
           </div>
           <Link to="/settings" className="connection-pill">
             <i className={health.isSuccess ? "online" : ""} />
-            {health.isPending
-              ? "Checking API"
-              : health.isSuccess
-                ? "Metadata API online"
-                : "API unavailable"}
+            {demoOnly
+              ? "Public demo · sample data"
+              : health.isPending
+                ? "Checking API"
+                : health.isSuccess
+                  ? "Metadata API online"
+                  : "API unavailable"}
           </Link>
         </header>
         {auth.preview && (
           <div className="preview-banner">
             <Sparkles size={15} />
             <span>
-              You’re exploring sample content. Your own files haven’t been
-              connected.
+              {demoOnly
+                ? "Sample demo only. Uploads, playback and live AI processing are disabled. No private storage is connected."
+                : "You’re exploring sample content. Your own files haven’t been connected."}
             </span>
-            <button onClick={auth.leavePreview}>
-              Set up my archive <ArrowRight size={14} />
-            </button>
+            {!demoOnly && (
+              <button onClick={auth.leavePreview}>
+                Set up my archive <ArrowRight size={14} />
+              </button>
+            )}
           </div>
         )}
         <main id="main" tabIndex={-1}>
@@ -216,7 +232,29 @@ export default function App() {
               element={<Faces key={auth.session?.user.id || "sample"} />}
             />
             <Route path="/activity" element={<ActivityPage />} />
-            <Route path="/settings" element={<Connections />} />
+            <Route
+              path="/settings"
+              element={
+                demoOnly ? (
+                  <section className="panel">
+                    <h1>About this demonstration</h1>
+                    <p>
+                      Explore the sample library, search, filters and media
+                      details. All content here is fictional sample data.
+                    </p>
+                    <p>
+                      This public website has no connection to a database or
+                      home storage. Uploads, playback, account changes and AI
+                      processing require a separately configured private
+                      installation.
+                    </p>
+                    <Link to="/">Explore the sample library</Link>
+                  </section>
+                ) : (
+                  <Connections />
+                )
+              }
+            />
             <Route
               path="/account"
               element={<Account key={auth.session?.user.id || "sample"} />}

@@ -4,6 +4,9 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolve, extname, sep } from "node:path";
 import { chromium } from "@playwright/test";
+import { expect } from "@playwright/test";
+
+const demo = process.argv.includes("--demo");
 
 const root = resolve(fileURLToPath(new URL("../dist/", import.meta.url)));
 const server = createServer(async (req, res) => {
@@ -17,7 +20,11 @@ const server = createServer(async (req, res) => {
   try {
     const data = await readFile(name === "/" ? resolve(root, "index.html") : target);
     res.writeHead(200, { "Content-Type": types[extname(name)] || "text/html" }).end(data);
-  } catch { res.writeHead(404).end(); }
+  } catch {
+    if (demo && !extname(name)) {
+      res.writeHead(200, { "Content-Type": "text/html" }).end(await readFile(resolve(root, "index.html")));
+    } else res.writeHead(404).end();
+  }
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const origin = "http://127.0.0.1:" + server.address().port;
@@ -26,7 +33,30 @@ try {
   browser = await chromium.launch();
   const context = await browser.newContext();
   const page = await context.newPage();
+  const prohibited = [];
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (url.origin !== origin || /^\/(api|health|db-health|auth\/v1)(\/|$)/.test(url.pathname))
+      prohibited.push(url.href);
+  });
   await page.goto(origin);
+  if (demo) {
+    await expect(page.getByText("Public demo · sample data")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Exit preview" })).toHaveCount(0);
+    await page.getByRole("textbox", { name: "Search your archive" }).fill("no-sample-matches-this");
+    await page.getByRole("button", { name: "Submit search" }).click();
+    await expect(page).toHaveURL(/q=no-sample-matches-this/);
+    for (const path of ["/settings", "/faces", "/account", "/activity", "/auth/sign-in", "/"]) {
+      await page.goto(origin + path);
+      await expect(page.getByText("Public demo · sample data")).toBeVisible();
+      await expect(page.locator('input[type="password"]')).toHaveCount(0);
+    }
+    assert.deepEqual(prohibited, [], "Demo must not contact backend or external services");
+    assert.deepEqual(errors, [], "Demo must not have browser runtime errors");
+    console.log("Public demo entry, routes, search and network isolation passed.");
+  }
   await page.evaluate(() => Promise.race([
     navigator.serviceWorker.ready,
     new Promise((_, reject) => setTimeout(() => reject(new Error("Service worker did not register")), 10000)),

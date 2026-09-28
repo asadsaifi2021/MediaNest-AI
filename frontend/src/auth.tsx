@@ -8,7 +8,7 @@ import {
 } from "react";
 import { createClient, type Session } from "@supabase/supabase-js";
 import { useQueryClient } from "@tanstack/react-query";
-import { configIssue, publicKey, supabaseUrl } from "./config";
+import { configIssue, publicKey, supabaseUrl, demoOnly } from "./config";
 
 export const supabase = configIssue
   ? null
@@ -66,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const client = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(Boolean(supabase));
-  const [preview, setPreview] = useState(false);
+  const [preview, setPreview] = useState(demoOnly);
   const [error, setError] = useState("");
   const [callbackError, setCallbackError] = useState("");
   const user = useRef<string | null>(null);
@@ -126,11 +126,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         leavePreview: () => {
           clear();
-          setPreview(false);
+          setPreview(demoOnly);
         },
         signOut: async () => {
           clear();
-          setPreview(false);
+          setPreview(demoOnly);
           const result = await supabase?.auth
             .signOut({ scope: "local" })
             .catch(() => ({ error: true }));
