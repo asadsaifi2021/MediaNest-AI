@@ -9,6 +9,54 @@ const bob = '22222222-2222-4222-8222-222222222222';
 const embedding = [1, ...Array(511).fill(0)];
 const migrations = new URL('../migrations/', import.meta.url);
 
+test('archive search, AV completion, AI consent and stale-result isolation', async () => {
+  const db = await database();
+  try {
+    await migrate(db);
+    await db.exec('set role service_role');
+    const node = (await db.query(
+      "insert into public.storage_nodes(user_id,device_id,display_name,base_url) values ($1,'pc','PC','https://pc.example.test') returning id", [alice],
+    )).rows[0].id;
+    const media = '44444444-4444-4444-8444-444444444444';
+    const sql = 'select public.complete_media_upload($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)';
+    const args = [alice,node,media,'Holiday.MP4',123,'video/mp4','a'.repeat(64),'b'.repeat(64),50,
+      'c'.repeat(64),200,'video/mp4',JSON.stringify({duration:2})];
+    await assert.rejects(db.query(sql,[bob,...args.slice(1)]));
+    await db.query(sql,args); await db.query(sql,args);
+    assert.equal((await db.query('select * from public.media_objects')).rows.length,3);
+    await assert.rejects(db.query(sql,[...args.slice(0,9),'d'.repeat(64),...args.slice(10)]));
+    const search = (owner, query) => db.query('select * from public.search_archive($1,$2)',[owner,query]);
+    assert.equal((await search(alice,'holiday')).rows.length,1);
+    assert.equal((await search(bob,'holiday')).rows.length,0);
+    assert.equal((await search(alice,"%),user_id.eq.any")).rows.length,0);
+    const request = '55555555-5555-4555-8555-555555555555';
+    const face = '66666666-6666-4666-8666-666666666666';
+    await db.query("update public.media_metadata set tags='{Family}',ai_status='queued',ai_request_id=$1,ai_options='{\"faces\":true}' where id=$2",[request,media]);
+    const result = {tags:['car'],transcription:'A picnic beside the mountains',models:{objects:'test'},
+      faces:[{id:face,embedding,model_id:'test-face',vector_version:1}]};
+    const apply = (owner=alice,req=request) => db.query('select public.apply_index_result($1,$2,$3,$4,$5) as applied',
+      [owner,node,media,req,JSON.stringify(result)]);
+    await assert.rejects(apply(bob));
+    assert.equal((await apply(alice,'77777777-7777-4777-8777-777777777777')).rows[0].applied,false);
+    assert.equal((await apply()).rows[0].applied,true);
+    let row = (await search(alice,'CAR')).rows[0];
+    assert.deepEqual(row.tags,['Family']); assert.deepEqual(row.ai_tags,['car']);
+    assert.equal((await search(alice,'mountains')).rows.length,1);
+    await db.query("update public.face_embeddings set person_name='Dad' where id=$1",[face]);
+    await apply();
+    assert.equal((await db.query('select person_name from public.face_embeddings where id=$1',[face])).rows[0].person_name,'Dad');
+    assert.equal((await db.query('select * from public.named_face_groups($1)',[alice])).rows[0].person_name,'Dad');
+    assert.equal((await db.query('select * from public.named_face_groups($1)',[bob])).rows.length,0);
+    await db.query('select public.forget_media_faces($1,$2)',[alice,media]);
+    assert.equal((await apply()).rows[0].applied,false);
+    assert.equal((await db.query('select id from public.face_embeddings')).rows.length,0);
+    await db.exec('reset role; set role authenticated');
+    await assert.rejects(search(alice,'holiday'));
+    await assert.rejects(apply());
+    await db.exec('reset role');
+  } finally { await db.close(); }
+});
+
 test('photo completion is atomic, idempotent, and owner/node scoped', async () => {
   const db = await database();
   try {

@@ -117,6 +117,15 @@ label textarea {
   display: block;
   margin-top: 8px;
 }
+label input[type="checkbox"] {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin: 0 8px 0 0;
+  padding: 0;
+  vertical-align: middle;
+  accent-color: #315c4e;
+}
 code {
   font-size: 12px;
   overflow-wrap: anywhere;

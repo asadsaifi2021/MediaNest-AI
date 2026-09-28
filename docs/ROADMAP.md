@@ -41,22 +41,26 @@
 
 ## 4. Reliable archive
 
-- [ ] Durable jobs, retry/backoff, resumable transfers, and deduplication.
-- [ ] User-editable tags, pagination, deletion, and metadata synchronization.
-- [ ] Video/audio range playback and compatible local derivatives.
+- [x] Local SQLite AI queue with restart recovery and retry/backoff; tested with simulated outages.
+- [x] User-editable tags and owner-scoped filename/tag/transcript search.
+- [x] Video/audio upload/derivative adapters and authorized range playback; mocked decoder tests.
+- [ ] Real FFmpeg playback verification on this PC.
+- [ ] Resumable/batch transfers, cross-ID deduplication and general media deletion.
 - [ ] Backup and restore verification.
 
 ## 5. AI search
 
 - [ ] License review and hardware benchmark for each chosen model.
-- [ ] Object tags and semantic scene search.
-- [ ] Face embeddings, user-confirmed naming, and calibrated matching.
-- [ ] Timestamped transcripts and full-text search.
-- [ ] Model-version tracking and incremental re-indexing.
+- [x] Implement opt-in YOLOv8 tagging, offline Whisper transcription and SFace adapters.
+- [x] Model-hash isolation, user-confirmed face naming/search and forget-face invalidation.
+- [x] Timestamped transcript storage and full-text search SQL.
+- [ ] Real model inference/hardware verification and face threshold calibration.
+- [ ] Semantic scene search (YOLO common-object classes are not a scene model).
 
 ## 6. Installation and deployment
 
-- [ ] PWA manifest and deliberate metadata caching policy.
+- [x] PWA manifest, generic-offline-only service worker, and private HTTPS deployment guide.
+- [ ] Apply migrations 006–008 to hosted Supabase.
 - [ ] Android and Windows browser testing.
 - [ ] Family access through Tailscale with scoped permissions.
 - [ ] Measured cloud deployment costs and quotas.

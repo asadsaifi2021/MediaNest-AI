@@ -8,6 +8,16 @@ export interface Media {
   file_type: MediaType;
   thumbnail_url: string | null;
   tags: string[];
+  ai_tags?: string[];
+  ai_status?: string;
+  ai_message?: string | null;
+  media_info?: {
+    duration?: number;
+    width?: number;
+    height?: number;
+    video_codec?: string;
+    audio_codec?: string;
+  };
   transcription: string | null;
   created_at: string;
   updated_at: string;

@@ -61,6 +61,9 @@ test("signup validates passwords, sends PKCE confirmation, and exchanges link on
   });
   await page.goto("/");
   await page.getByRole("link", { name: "Create an account" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Create your private archive." }),
+  ).toBeVisible();
   await page.getByLabel("Email address").fill("alice@example.com");
   await page.getByLabel("Password", { exact: true }).fill("short");
   await page.getByLabel("Confirm password").fill("short");
@@ -178,6 +181,9 @@ test("resend and disabled signup errors are actionable", async ({ page }) => {
     "If confirmation is needed",
   );
   await page.getByRole("link", { name: "Create an account" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Create your private archive." }),
+  ).toBeVisible();
   await page.getByLabel("Email address").fill("alice@example.com");
   await page.getByLabel("Password", { exact: true }).fill("my-long-password");
   await page.getByLabel("Confirm password").fill("my-long-password");

@@ -27,11 +27,13 @@ class DB:
         self.nodes = [{"id": NODE, "user_id": OWNER, "disabled_at": None,
                        "base_url": "http://127.0.0.1:8100", "device_id": "pc"}]
         self.objects = []
+        self.faces = []
         self.receipts = []
         self.fail_completion = False
 
     def table(self, table):
-        rows = self.nodes if table == "storage_nodes" else self.objects
+        rows = (self.nodes if table == "storage_nodes" else self.faces
+                if table == "face_embeddings" else self.objects)
 
         class Query:
             def __init__(self):
@@ -54,11 +56,12 @@ class DB:
         return Query()
 
     def rpc(self, name, params):
-        assert name == "complete_photo_upload"
+        assert name in ("complete_photo_upload", "complete_media_upload")
         if self.fail_completion:
             raise RuntimeError("offline")
         self.receipts.append(params)
-        for kind in ("original", "thumbnail"):
+        for kind in (("original", "thumbnail", "playback") if name == "complete_media_upload"
+                     else ("original", "thumbnail")):
             self.objects.append({
                 "id": str(uuid4()), "user_id": params["p_user_id"],
                 "storage_node_id": params["p_node_id"], "media_id": params["p_media_id"],

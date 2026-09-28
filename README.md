@@ -30,8 +30,11 @@ migration 004. Registration does not prove connectivity or enroll a trusted node
 The single-PC photo flow now includes scoped upload/read grants, a local service,
 JPEG/PNG/WebP uploads, local thumbnails, and authorized gallery previews.
 See [first photo upload](docs/PHOTO_UPLOAD.md). Migration 005 and the local
-service configuration are required. The AI worker, video/audio upload/playback,
-remote-device access, and PWA installation are future milestones.
+service configuration are required. Tags/search, video/audio conversion/playback,
+an optional local YOLOv8/Whisper/SFace worker, and private PWA hosting are now
+implemented. Follow [next-stage setup](docs/NEXT_STAGE_SETUP.md) to apply migrations
+006–008 and install the required local tools/models. Hosted activation, actual AI
+inference benchmarking and remote-device installation still require verification.
 The configured development project's database connectivity has been verified;
 user sign-in is working. Two-user live isolation testing is still pending.
 
@@ -130,6 +133,10 @@ supabase/migrations/001_media_search.sql
 supabase/migrations/002_archive_events.sql
 supabase/migrations/003_database_integrity.sql
 supabase/migrations/004_storage_registry.sql
+supabase/migrations/005_photo_upload.sql
+supabase/migrations/006_search.sql
+supabase/migrations/007_media_upload.sql
+supabase/migrations/008_local_indexing.sql
 ```
 
 Then start the API and request `GET /db-health`. A successful response is

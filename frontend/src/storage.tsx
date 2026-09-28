@@ -157,6 +157,40 @@ export function StorageRegistry() {
                   {!node.disabled_at && (
                     <button
                       className="secondary"
+                      onClick={async () => {
+                        const url = window.prompt(
+                          "Storage origin (your private HTTPS address, without a path)",
+                          node.base_url,
+                        );
+                        if (!url) return;
+                        try {
+                          await request(
+                            `/api/v1/storage-nodes/${node.id}/origin`,
+                            session?.access_token,
+                            {
+                              method: "POST",
+                              body: JSON.stringify({ base_url: url }),
+                            },
+                          );
+                          await cache.invalidateQueries({ queryKey: key });
+                          setNotice(
+                            "Storage address updated. Connectivity is not yet verified.",
+                          );
+                        } catch (e) {
+                          setNotice(
+                            e instanceof Error
+                              ? e.message
+                              : "Could not update address.",
+                          );
+                        }
+                      }}
+                    >
+                      Change storage address
+                    </button>
+                  )}
+                  {!node.disabled_at && (
+                    <button
+                      className="secondary"
                       disabled={disable.isPending}
                       onClick={() => {
                         if (

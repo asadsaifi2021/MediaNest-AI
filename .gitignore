@@ -29,3 +29,7 @@ supabase/.temp/
 supabase/.branches/
 local_storage/.env
 local-media/
+local-state/
+models/
+*.sqlite3-wal
+*.sqlite3-shm

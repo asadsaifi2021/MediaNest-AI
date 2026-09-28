@@ -90,9 +90,9 @@ test("photo upload sends bytes only to storage and loads authorized thumbnail", 
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Add media", exact: true }).click();
   await page
-    .getByLabel("Photo", { exact: true })
+    .getByLabel("Media file", { exact: true })
     .setInputFiles({ name: "first.png", mimeType: "image/png", buffer: pixel });
-  await page.getByRole("button", { name: "Upload photo", exact: true }).click();
+  await page.getByRole("button", { name: "Upload media", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "first.png" })).toBeVisible();
   await expect(page.locator(".media-card img")).toHaveAttribute(
@@ -158,6 +158,10 @@ test("storage registration saves only metadata and supports disabling", async ({
 });
 
 async function systemRoutes(page: Page) {
+  await page.route("**/api/v1/face-groups", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route("**/api/v1/faces?*", (route) => route.fulfill({ json: [] }));
   await page.route("**/health", (route) =>
     route.fulfill({ json: { status: "ok", service: "MediaNest AI" } }),
   );
@@ -187,9 +191,9 @@ test("sample gallery filters, details, keyboard dismissal and responsive layout"
   await expect(page.locator(".media-card")).toHaveCount(1);
   await page.getByRole("button", { name: "All media", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Search by exact tag" })
+    .getByRole("textbox", { name: "Search your archive" })
     .fill("Nature");
-  await page.getByRole("button", { name: "Submit tag search" }).click();
+  await page.getByRole("button", { name: "Submit search" }).click();
   await expect(page.locator(".media-card")).toHaveCount(2);
   await page
     .getByRole("button", { name: "Open The quiet side of the lake.jpg" })
@@ -238,6 +242,144 @@ function token(user: string) {
   ).toString("base64url");
   return "eyJhbGciOiJIUzI1NiJ9." + payload + ".test-signature";
 }
+
+test("editable tags, text search and explicit AI consent", async ({ page }) => {
+  await systemRoutes(page);
+  await page.route("https://test.supabase.co/auth/v1/**", (route) =>
+    route.fulfill({ json: session("alice") }),
+  );
+  const media = {
+    id: "local-photo",
+    user_id: "alice",
+    device_id: "pc",
+    local_file_id: "local-photo",
+    original_filename: "holiday.jpg",
+    file_type: "image",
+    thumbnail_url: null,
+    tags: ["Family"],
+    ai_status: "not_requested",
+    ai_tags: [],
+    created_at: "2026-09-27T00:00:00Z",
+    updated_at: "2026-09-27T00:00:00Z",
+  };
+  let indexed = false;
+  let searched = false;
+  await page.route("**/api/v1/media?*", (route) => {
+    if (new URL(route.request().url()).searchParams.get("q") === "holiday")
+      searched = true;
+    return route.fulfill({ json: { results: [media], has_more: false } });
+  });
+  await page.route("**/api/v1/media/local-photo**", (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/tags")) {
+      expect(route.request().postDataJSON().tags).toEqual(["Family", "Summer"]);
+      media.tags = ["Family", "Summer"];
+    } else if (url.pathname.endsWith("/index")) {
+      expect(route.request().postDataJSON()).toEqual({
+        objects: true,
+        transcription: false,
+        faces: true,
+      });
+      indexed = true;
+      media.ai_status = "queued";
+    } else if (url.pathname.endsWith("/access-grant")) {
+      return route.fulfill({
+        status: 404,
+        json: { detail: "Preview unavailable" },
+      });
+    }
+    return route.fulfill({ json: media });
+  });
+  await page.goto("/");
+  await page.getByLabel("Email address").fill("alice@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByLabel("Search your archive").fill("holiday");
+  await page.getByRole("button", { name: "Submit search" }).click();
+  await expect.poll(() => searched).toBeTruthy();
+  await page.getByRole("button", { name: "Open holiday.jpg" }).click();
+  await page.getByLabel("Tags (separate with commas)").fill("Family, Summer");
+  await page.getByRole("button", { name: "Save tags", exact: true }).click();
+  await expect(page.getByText("Tags saved.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/I consent to face indexing/)).not.toBeChecked();
+  await page.getByLabel(/I consent to face indexing/).check();
+  await page.getByRole("button", { name: "Queue local indexing" }).click();
+  await expect.poll(() => indexed).toBeTruthy();
+  await expect(
+    page.getByText("Queued. Keep the local AI worker running."),
+  ).toBeVisible();
+});
+
+test("face matches are reviewed and named without automatic selection", async ({
+  page,
+}) => {
+  await systemRoutes(page);
+  await page.route("https://test.supabase.co/auth/v1/**", (route) =>
+    route.fulfill({ json: session("alice") }),
+  );
+  await page.route("**/api/v1/media?*", (route) =>
+    route.fulfill({ json: { results: [], has_more: false } }),
+  );
+  await page.route("**/api/v1/faces?*", (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: "face-1",
+          media_id: "photo-1",
+          person_name: null,
+          model_id: "test",
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/v1/faces/*/preview-grant", (route) =>
+    route.fulfill({
+      status: 404,
+      json: { detail: "Local crop unavailable" },
+    }),
+  );
+  await page.route("**/api/v1/faces/face-1/similar?*", (route) =>
+    route.fulfill({
+      json: {
+        matches: [
+          {
+            face_id: "face-1",
+            media_id: "photo-1",
+            person_name: null,
+            similarity: 0.98,
+          },
+        ],
+      },
+    }),
+  );
+  let named = false;
+  await page.route("**/api/v1/faces/name", (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      ids: ["face-1"],
+      name: "Dad",
+    });
+    named = true;
+    return route.fulfill({ json: { updated: 1 } });
+  });
+  await page.goto("/");
+  await page.getByLabel("Email address").fill("alice@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await navigate(page, "Face search");
+  await page.getByRole("button", { name: "Find similar faces" }).click();
+  await expect(
+    page.getByRole("button", { name: "Save name for selected faces" }),
+  ).toBeDisabled();
+  await page.getByRole("checkbox", { name: /Unnamed.*score/ }).check();
+  await page.getByLabel("Person name (blank removes name)").fill("Dad");
+  await page
+    .getByRole("button", { name: "Save name for selected faces" })
+    .click();
+  await expect.poll(() => named).toBeTruthy();
+  await expect(
+    page.getByText("Names saved for the faces you selected."),
+  ).toBeVisible();
+});
 function session(user: string) {
   return {
     access_token: token(user),

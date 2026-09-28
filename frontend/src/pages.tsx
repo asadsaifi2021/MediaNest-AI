@@ -27,6 +27,8 @@ import { request, parseEmbedding } from "./api";
 import { sampleMedia } from "./demo";
 import { StorageRegistry } from "./storage";
 import { PhotoUpload } from "./photos";
+import { PeopleBrowser } from "./indexing";
+import { InstallApp } from "./install";
 import type { ArchiveEvent, FaceMatch, Media, MediaPage } from "./types";
 import {
   date,
@@ -42,6 +44,7 @@ export function Library() {
   const { session, preview } = useAuth();
   const [params, setParams] = useSearchParams();
   const tag = params.get("tag") || "";
+  const q = params.get("q") || "";
   const rawType = params.get("type") || "";
   const type = ["image", "video", "audio"].includes(rawType) ? rawType : "";
   const sort = params.get("sort") === "oldest" ? "oldest" : "newest";
@@ -49,8 +52,8 @@ export function Library() {
     100000,
     Math.max(0, Number.parseInt(params.get("page") || "0") || 0),
   );
-  const [search, setSearch] = useState(tag);
-  useEffect(() => setSearch(tag), [tag]);
+  const [search, setSearch] = useState(q);
+  useEffect(() => setSearch(q), [q]);
   const [layout, setLayout] = useState<"grid" | "list">("grid");
   const [selected, setSelected] = useState<Media | null>(null);
   const [importInfo, setImportInfo] = useState(false);
@@ -62,13 +65,23 @@ export function Library() {
     setParams(next);
   }
   const query = useQuery({
-    queryKey: ["media", session?.user.id, preview, tag, type, sort, page],
+    queryKey: ["media", session?.user.id, preview, tag, q, type, sort, page],
     enabled: preview || Boolean(session),
     queryFn: ({ signal }): Promise<MediaPage> => {
       if (preview) {
         const matches = sampleMedia.filter(
           (m) =>
-            (!type || m.file_type === type) && (!tag || m.tags.includes(tag)),
+            (!type || m.file_type === type) &&
+            (!tag || m.tags.includes(tag)) &&
+            (!q ||
+              [
+                m.original_filename || m.local_file_id,
+                ...m.tags,
+                m.transcription || "",
+              ]
+                .join(" ")
+                .toLowerCase()
+                .includes(q.toLowerCase())),
         );
         if (sort === "oldest") matches.reverse();
         return Promise.resolve({
@@ -83,6 +96,7 @@ export function Library() {
       });
       if (type) filters.set("file_type", type);
       if (tag) filters.set("tag", tag);
+      if (q) filters.set("q", q);
       return request<MediaPage>(
         "/api/v1/media?" + filters,
         session?.access_token,
@@ -186,18 +200,18 @@ export function Library() {
             className="search-form"
             onSubmit={(e) => {
               e.preventDefault();
-              update({ tag: search.trim() });
+              update({ q: search.trim(), tag: "" });
             }}
           >
             <Search size={18} />
             <input
-              aria-label="Search by exact tag"
-              placeholder="Search an exact tag…"
-              maxLength={100}
+              aria-label="Search your archive"
+              placeholder="Names, tags, or transcript words…"
+              maxLength={200}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <button aria-label="Submit tag search">
+            <button aria-label="Submit search">
               <ArrowUpRight size={17} />
             </button>
           </form>
@@ -220,12 +234,12 @@ export function Library() {
               : `${items.length} item${items.length === 1 ? "" : "s"} on this page`}
             {preview ? " · Illustrated sample collection" : ""}
           </span>
-          {tag && (
+          {(tag || q) && (
             <button
               className="text-button"
               onClick={() => {
                 setSearch("");
-                update({ tag: "" });
+                update({ tag: "", q: "" });
               }}
             >
               Clear search
@@ -247,11 +261,13 @@ export function Library() {
         ) : items.length === 0 ? (
           <Empty
             title={
-              tag || type ? "No matching moments yet" : "Your story starts here"
+              tag || q || type
+                ? "No matching moments yet"
+                : "Your story starts here"
             }
           >
-            {tag || type
-              ? "Try another exact tag or choose All media. Tags are case-sensitive."
+            {tag || q || type
+              ? "Try another filename, tag, or transcript phrase, or choose All media."
               : "Connect your local storage and sync metadata to fill your library."}
           </Empty>
         ) : (
@@ -285,7 +301,7 @@ export function Library() {
                       key={t}
                       onClick={() => {
                         setSearch(t);
-                        update({ tag: t });
+                        update({ tag: t, q: "" });
                       }}
                     >
                       {t}
@@ -425,17 +441,18 @@ export function Faces() {
         <ScanFace size={34} />
       </div>
       <div className="panel">
-        <h2>Face search connection</h2>
+        <PeopleBrowser />
+        <h2>Advanced vector search</h2>
         <p className="muted">
-          Photo-based face search needs the local AI worker. Until that is
-          connected, you can test the existing API using a 512-value embedding
-          from the same model used to index your archive.
+          Use the indexed-face browser above for normal searches. This advanced
+          form is for legacy 512-value embeddings only, from the same legacy
+          model.
         </p>
         <div className="notice">
           <HardDrive size={20} />
           <p>
-            Photo upload and face extraction are not available yet. Embeddings
-            from different models cannot be compared reliably.
+            Local face processing must be explicitly enabled. Embeddings from
+            different models cannot be compared reliably.
           </p>
         </div>
         <form onSubmit={submit}>
@@ -688,11 +705,12 @@ export function Connections() {
         <ConnectionRow
           icon={HardDrive}
           title="Local media storage"
-          description="Register your PC or NAS below. Secure enrollment, uploads, and playback are still upcoming."
-          state="Setup required"
+          description="Your local service handles uploads, previews, and playback. Register its address below; an entry alone does not verify connectivity."
+          state="Local service required"
         />
       </div>
       <StorageRegistry />
+      <InstallApp />
       <div className="two-panels">
         <section className="panel">
           <span className="eyebrow">CONNECT YOUR ACCOUNT</span>

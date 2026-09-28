@@ -10,6 +10,9 @@ import {
 } from "lucide-react";
 import type { Media } from "./types";
 import { OriginalPhoto, useLocalPhoto } from "./photos";
+import { TagEditor } from "./media-tools";
+import { LocalPlayer } from "./player";
+import { IndexControls } from "./indexing";
 
 export const typeIcons = { image: Image, video: Film, audio: AudioLines };
 export const typeNames = { image: "Photo", video: "Video", audio: "Audio" };
@@ -160,6 +163,7 @@ export function MediaDetails({
     >
       <Thumbnail media={media} />
       <div className="dialog-body">
+        {!preview && <TagEditor key={media.id} media={media} />}
         <div className="tags">
           {media.tags.map((tag) => (
             <span key={tag}>{tag}</span>
@@ -187,11 +191,26 @@ export function MediaDetails({
             {preview
               ? "This is an illustrated sample, not a stored file."
               : media.original_filename
-                ? "This photo is stored on your PC, not in Supabase."
+                ? "This file is stored on your PC, not in Supabase."
                 : "This legacy record contains metadata only; its local file is not connected."}
           </p>
         </div>
-        {!preview && media.original_filename && <OriginalPhoto id={media.id} />}
+        {media.media_info?.duration != null && (
+          <p>
+            Duration: {Math.round(media.media_info.duration)} seconds
+            {media.media_info.width
+              ? ` · ${media.media_info.width} × ${media.media_info.height}`
+              : ""}
+          </p>
+        )}
+        {!preview &&
+          media.original_filename &&
+          (media.file_type === "image" ? (
+            <OriginalPhoto id={media.id} />
+          ) : (
+            <LocalPlayer id={media.id} type={media.file_type} />
+          ))}
+        {!preview && media.original_filename && <IndexControls media={media} />}
       </div>
     </Modal>
   );

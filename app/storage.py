@@ -60,6 +60,25 @@ class StorageNode(StorageNodeCreate):
     disabled_at: datetime | None = None
 
 
+class OriginUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+    base_url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("base_url")
+    @classmethod
+    def valid_origin(cls, value: str) -> str:
+        return StorageNodeCreate.validate_origin(value)
+
+
+@router.post("/{node_id}/origin", response_model=StorageNode)
+async def update_origin(node_id: UUID, payload: OriginUpdate, user: CurrentUser, client: Database):
+    rows = await to_thread.run_sync(lambda: client.table("storage_nodes").update(
+        {"base_url": payload.base_url}).eq("id", str(node_id)).eq("user_id", user["sub"]).execute().data)
+    if not rows:
+        raise HTTPException(404, "Storage not found")
+    return rows[0]
+
+
 def storage_error(exc: Exception) -> HTTPException:
     if getattr(exc, "code", None) in {"42P01", "PGRST205"}:
         return HTTPException(503, "Storage registry needs Supabase migration 004")

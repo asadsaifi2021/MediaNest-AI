@@ -13,6 +13,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "test": "vitest run tests/unit",
     "test:e2e": "playwright test",
+    "test:pwa": "node scripts/check-pwa.mjs",
     "format": "prettier --write src tests *.ts *.json index.html",
     "format:check": "prettier --check src tests *.ts *.json index.html"
   },

@@ -16,7 +16,7 @@ from .storage import Database
 
 router = APIRouter(prefix="/api/v1", tags=["transfers"])
 Config = Annotated[Settings, Depends(get_settings)]
-MAX_BYTES = 20 * 1024 * 1024
+MAX_BYTES = 256 * 1024 * 1024
 ISSUER = "medianest-transfer"
 
 
@@ -59,7 +59,9 @@ class UploadRequest(BaseModel):
     media_id: UUID
     filename: str = Field(min_length=1, max_length=180)
     byte_size: int = Field(ge=1, le=MAX_BYTES)
-    content_type: Literal["image/jpeg", "image/png", "image/webp"]
+    content_type: Literal["image/jpeg", "image/png", "image/webp", "video/mp4",
+                          "video/webm", "video/quicktime", "audio/mpeg", "audio/mp4",
+                          "audio/wav", "audio/x-wav", "audio/flac", "audio/ogg"]
 
     @field_validator("filename")
     @classmethod
@@ -72,6 +74,8 @@ class UploadRequest(BaseModel):
 @router.post("/storage-nodes/{node_id}/upload-grant")
 async def upload_grant(node_id: UUID, payload: UploadRequest, user: CurrentUser,
                        client: Database, settings: Config) -> dict:
+    if payload.content_type.startswith("image/") and payload.byte_size > 20 * 1024 * 1024:
+        raise HTTPException(413, "Photos are limited to 20 MiB")
     secret(settings)
     if str(node_id) != settings.local_node_id:
         raise HTTPException(409, "This storage node is not configured for uploads")
@@ -83,7 +87,7 @@ async def upload_grant(node_id: UUID, payload: UploadRequest, user: CurrentUser,
 
 @router.post("/media/{media_id}/access-grant")
 async def access_grant(media_id: UUID, user: CurrentUser, client: Database, settings: Config,
-                       kind: Literal["original", "thumbnail"] = "thumbnail") -> dict:
+                       kind: Literal["original", "thumbnail", "playback"] = "thumbnail") -> dict:
     secret(settings)
 
     def lookup() -> tuple[dict, dict]:
@@ -124,6 +128,14 @@ async def validate_transfer(claims: NodeClaims, client: Database, settings: Conf
     await to_thread.run_sync(active_node, client, settings.local_node_id, claims["sub"])
     if claims["purpose"] == "read":
         def lookup():
+            if claims.get("kind") == "face":
+                original = client.table("media_objects").select("id").eq(
+                    "user_id", claims["sub"]).eq("storage_node_id", settings.local_node_id).eq(
+                    "media_id", claims["media_id"]).eq("kind", "original").limit(1).execute().data
+                if not original:
+                    return []
+                return client.table("face_embeddings").select("id").eq("user_id", claims["sub"]).eq(
+                    "media_id", claims["media_id"]).eq("id", claims["object_key"]).limit(1).execute().data
             return client.table("media_objects").select("id").eq(
                 "user_id", claims["sub"]).eq("storage_node_id", settings.local_node_id).eq(
                 "media_id", claims["media_id"]).eq("kind", claims["kind"]).eq(
@@ -140,6 +152,10 @@ class Receipt(BaseModel):
     original_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     thumbnail_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     thumbnail_size: int = Field(gt=0, le=2 * 1024 * 1024)
+    playback_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    playback_size: int | None = Field(default=None, gt=0, le=1024 * 1024 * 1024)
+    playback_type: Literal["video/mp4", "audio/mp4"] | None = None
+    media_info: dict = Field(default_factory=dict)
 
 
 @router.post("/local/complete")
@@ -151,11 +167,20 @@ async def complete_transfer(payload: Receipt, claims: NodeClaims, client: Databa
     params = {"p_user_id": claims["sub"], "p_node_id": settings.local_node_id,
               "p_media_id": claims["media_id"], "p_filename": claims["filename"],
               "p_size": claims["byte_size"], "p_content_type": claims["content_type"],
-              **{"p_" + k: v for k, v in payload.model_dump().items()}}
+              **{"p_" + k: v for k, v in payload.model_dump(exclude_none=True).items()
+                 if k != "media_info"}}
+    is_av = not claims["content_type"].startswith("image/")
+    if is_av:
+        if not all((payload.playback_sha256, payload.playback_size, payload.playback_type)):
+            raise HTTPException(422, "Playback metadata required")
+        params["p_info"] = payload.media_info
+    else:
+        params = {k: v for k, v in params.items() if not k.startswith("p_playback")}
     try:
-        await to_thread.run_sync(lambda: client.rpc("complete_photo_upload", params).execute())
+        await to_thread.run_sync(lambda: client.rpc(
+            "complete_media_upload" if is_av else "complete_photo_upload", params).execute())
     except Exception as exc:
         if getattr(exc, "code", "") in ("PGRST202", "42883"):
-            raise HTTPException(503, "Apply Supabase migration 005 to enable photo uploads") from exc
+            raise HTTPException(503, "Apply Supabase migrations through 007 to enable media uploads") from exc
         raise HTTPException(502, "Metadata sync failed; local files are preserved. Retry upload.") from exc
     return {"media_id": claims["media_id"], "status": "complete"}

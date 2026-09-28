@@ -179,7 +179,7 @@ async def database_health(
     """Check that the configured Supabase Data API can answer a small query."""
 
     def check_connection() -> None:
-        client.table("media_metadata").select("id").limit(1).execute()
+        client.table("media_metadata").select("id,ai_tags,media_info,ai_request_id").limit(1).execute()
         client.table("archive_events").select("id").limit(1).execute()
         client.table("face_embeddings").select("id,model_id").limit(1).execute()
         client.rpc("match_faces_v2", {
@@ -354,11 +354,18 @@ async def list_media(
     file_type: Literal["image", "video", "audio"] | None = None,
     tag: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
     sort: Literal["newest", "oldest"] = "newest",
+    q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> MediaPage:
     if tag is not None and not tag.strip():
         raise HTTPException(status_code=422, detail="Tag cannot be blank")
 
     def execute() -> list[dict[str, Any]]:
+        if q and q.strip():
+            return client.rpc("search_archive", {
+                "p_owner": user["sub"], "p_query": q.strip(),
+                "p_type": file_type, "p_tag": tag.strip() if tag else None,
+                "p_oldest": sort == "oldest", "p_offset": offset, "p_limit": limit + 1,
+            }).execute().data
         query = client.table("media_metadata").select("*").eq("user_id", user["sub"])
         if file_type:
             query = query.eq("file_type", file_type)
@@ -374,6 +381,8 @@ async def list_media(
         rows = await to_thread.run_sync(execute)
         return MediaPage(results=rows[:limit], has_more=len(rows) > limit)
     except Exception as exc:
+        if getattr(exc, "code", "") in {"PGRST202", "PGRST204", "42703", "42883"}:
+            raise HTTPException(503, "Apply Supabase migrations 006–008 to enable archive search and indexing") from exc
         raise HTTPException(status_code=502, detail="Media library request failed") from exc
 
 
@@ -396,3 +405,28 @@ async def get_media(
     if not rows:
         raise HTTPException(status_code=404, detail="Media not found")
     return MediaRecord(**rows[0])
+
+
+class TagUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+    tags: list[str] = Field(max_length=50)
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, value: list[str]) -> list[str]:
+        return MediaSyncRequest.normalize_tags(value)
+
+
+@router.post("/api/v1/media/{media_id}/tags", response_model=MediaRecord)
+async def update_tags(media_id: UUID, payload: TagUpdate, user: CurrentUser,
+                      client: Annotated[SupabaseQueryClient, Depends(get_supabase_client)]):
+    def execute():
+        return client.table("media_metadata").update({"tags": payload.tags}).eq(
+            "id", str(media_id)).eq("user_id", user["sub"]).execute().data
+    try:
+        rows = await to_thread.run_sync(execute)
+    except Exception as exc:
+        raise HTTPException(502, "Could not save tags") from exc
+    if not rows:
+        raise HTTPException(404, "Media not found")
+    return rows[0]

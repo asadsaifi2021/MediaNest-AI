@@ -16,12 +16,14 @@ import httpx
 from anyio import to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.transfers import MAX_BYTES, decode_grant
+
+from .media import process_av
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,12 +42,18 @@ def get_local_settings() -> LocalSettings:
     return LocalSettings()
 
 
+class CorsSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=ROOT / "local_storage" / ".env", extra="ignore")
+    cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+
 def create_app() -> FastAPI:
     service = FastAPI(title="MediaNest local photo storage", docs_url=None, redoc_url=None)
-    # Fixed development origins; remote access needs explicit HTTPS configuration.
     service.add_middleware(CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
+        allow_origins=CorsSettings().cors_origins, allow_credentials=True,
+        allow_methods=["GET", "HEAD", "POST"],
+        allow_headers=["Authorization", "Content-Type", "Range"],
+        expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"])
     service.include_router(router)
     return service
 
@@ -62,6 +70,8 @@ Image.MAX_IMAGE_PIXELS = 20_000_000
 
 def authorization(request: Request, settings: LocalSettings, purpose: str) -> tuple[str, dict]:
     token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+    if not token and purpose == "read":
+        token = request.cookies.get("medianest_playback", "")
     key = settings.local_node_secret.get_secret_value()
     if len(key) < 32:
         raise HTTPException(503, "Storage secret is not configured securely")
@@ -69,6 +79,21 @@ def authorization(request: Request, settings: LocalSettings, purpose: str) -> tu
     if claims["purpose"] != purpose:
         raise HTTPException(403, "Wrong file permission")
     return token, claims
+
+
+@router.post("/playback-session")
+async def playback_session(request: Request, settings: Config):
+    token, claims = authorization(request, settings, "read")
+    if claims.get("kind") != "playback":
+        raise HTTPException(403, "Playback permission required")
+    await to_thread.run_sync(metadata_call, settings, token, "/api/v1/local/validate", {})
+    # HttpOnly, one-file scoped cookie keeps credentials out of player URLs/logs.
+    response = JSONResponse({"status": "ready"})
+    response.set_cookie("medianest_playback", token, max_age=120, httponly=True,
+                        secure=request.url.scheme == "https", samesite="strict",
+                        path=f"/objects/{claims['media_id']}/playback")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def metadata_call(settings: LocalSettings, token: str, path: str, payload: dict) -> dict:
@@ -134,7 +159,8 @@ def process_photo(stage: Path, claims: dict, sha256: str) -> dict:
 
 @router.get("/health")
 async def health(settings: Config) -> dict:
-    return {"status": "ok", "node_id": str(settings.local_node_id)}
+    return {"status": "ok", "node_id": str(settings.local_node_id),
+            "ffmpeg_ready": bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))}
 
 
 @router.post("/upload")
@@ -172,15 +198,18 @@ async def upload(request: Request, settings: Config) -> dict:
                 raise HTTPException(409, "Upload ID already belongs to another file")
             receipt = manifest["receipt"]
         else:
-            receipt = await to_thread.run_sync(process_photo, stage, claims, digest.hexdigest())
+            processor = process_photo if claims["content_type"].startswith("image/") else process_av
+            receipt = await to_thread.run_sync(processor, stage, claims, digest.hexdigest())
             (stage / "manifest.json").write_text(
                 json.dumps({"upload": fingerprint, "receipt": receipt}), encoding="utf-8")
             os.rename(stage, target)
             stage = None
         # If this fails, final originals, thumbnail and manifest remain for an
         # identical retry. No rollback ever deletes a successfully saved photo.
-        return await to_thread.run_sync(metadata_call, settings, token,
-                                        "/api/v1/local/complete", receipt)
+        result = await to_thread.run_sync(metadata_call, settings, token,
+                                          "/api/v1/local/complete", receipt)
+        (target / ".synced").touch()
+        return result
     finally:
         if stage is not None:
             # Only the temporary directory created by this request; never target.
@@ -189,14 +218,14 @@ async def upload(request: Request, settings: Config) -> dict:
 
 
 @router.get("/objects/{media_id}/{kind}")
-async def read_photo(media_id: UUID, kind: Literal["original", "thumbnail"],
+async def read_photo(media_id: UUID, kind: Literal["original", "thumbnail", "playback"],
                      request: Request, settings: Config) -> FileResponse:
     token, claims = authorization(request, settings, "read")
     if claims["media_id"] != str(media_id) or claims.get("kind") != kind:
         raise HTTPException(403, "Permission does not cover this file")
     await to_thread.run_sync(metadata_call, settings, token, "/api/v1/local/validate", {})
     target = media_directory(settings, claims)
-    file = target / ("original" if kind == "original" else "thumbnail.jpg")
+    file = target / ("thumbnail.jpg" if kind == "thumbnail" else kind)
     manifest_file = target / "manifest.json"
     if file.is_symlink() or manifest_file.is_symlink():
         raise HTTPException(403, "Linked files are not allowed")
@@ -204,8 +233,26 @@ async def read_photo(media_id: UUID, kind: Literal["original", "thumbnail"],
         raise HTTPException(404, "Photo is unavailable on this PC")
     manifest = json.loads(manifest_file.read_text("utf-8"))
     return FileResponse(file,
-        media_type=manifest["upload"]["content_type"] if kind == "original" else "image/jpeg",
+        media_type=(manifest["upload"]["content_type"] if kind == "original" else
+                    manifest["receipt"]["playback_type"] if kind == "playback" else "image/jpeg"),
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/faces/{media_id}/{face_id}")
+async def read_face(media_id: UUID, face_id: UUID, request: Request, settings: Config):
+    token, claims = authorization(request, settings, "read")
+    if (claims["media_id"] != str(media_id) or claims.get("kind") != "face"
+            or claims.get("object_key") != str(face_id)):
+        raise HTTPException(403, "Permission does not cover this face")
+    await to_thread.run_sync(metadata_call, settings, token, "/api/v1/local/validate", {})
+    directory = media_directory(settings, claims) / "faces"
+    file = directory / (str(face_id) + ".jpg")
+    if directory.is_symlink() or file.is_symlink():
+        raise HTTPException(403, "Linked files are not allowed")
+    if not file.is_file():
+        raise HTTPException(404, "Re-index this file to generate its local face preview")
+    return FileResponse(file, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 app = create_app()

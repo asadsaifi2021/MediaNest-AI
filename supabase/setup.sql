@@ -412,3 +412,164 @@ grant execute on function public.complete_photo_upload(uuid,uuid,uuid,text,bigin
 notify pgrst, 'reload schema';
 commit;
 
+-- Migration: 006_search.sql
+begin;
+-- AI suggestions never overwrite the owner's hand-edited tags.
+alter table public.media_metadata
+  add column ai_tags text[] not null default '{}',
+  add column media_info jsonb not null default '{}',
+  add column ai_status text not null default 'not_requested'
+    check (ai_status in ('not_requested','queued','ready','failed')),
+  add column ai_models jsonb not null default '{}';
+create function public.search_archive(
+  p_owner uuid, p_query text, p_type text default null, p_tag text default null,
+  p_oldest boolean default false, p_offset integer default 0, p_limit integer default 25
+) returns setof public.media_metadata
+language plpgsql stable security invoker set search_path='' as $$
+begin
+  if length(p_query)>200 or p_limit not between 1 and 101 or p_offset<0 then
+    raise exception 'invalid search parameters' using errcode='22023';
+  end if;
+  return query select m.* from public.media_metadata m
+    where m.user_id=p_owner
+      and (p_type is null or m.file_type=p_type)
+      and (p_tag is null or p_tag=any(m.tags) or p_tag=any(m.ai_tags))
+      and (
+        strpos(lower(coalesce(m.original_filename,m.local_file_id)),lower(p_query))>0
+        or exists(select 1 from unnest(m.tags || m.ai_tags) t
+                  where strpos(lower(t),lower(p_query))>0)
+        or to_tsvector('simple',coalesce(m.transcription,'')) @@
+           websearch_to_tsquery('simple',p_query))
+    order by
+      case when p_oldest then m.created_at end asc,
+      case when not p_oldest then m.created_at end desc, m.id
+    offset p_offset limit p_limit;
+end $$;
+revoke all on function public.search_archive(uuid,text,text,text,boolean,integer,integer)
+  from public,anon,authenticated;
+grant execute on function public.search_archive(uuid,text,text,text,boolean,integer,integer)
+  to service_role;
+notify pgrst,'reload schema';
+commit;
+
+-- Migration: 007_media_upload.sql
+begin;
+create function public.complete_media_upload(
+  p_user_id uuid,p_node_id uuid,p_media_id uuid,p_filename text,p_size bigint,
+  p_content_type text,p_original_sha256 text,p_thumbnail_sha256 text,p_thumbnail_size bigint,
+  p_playback_sha256 text,p_playback_size bigint,p_playback_type text,p_info jsonb
+) returns uuid language plpgsql security invoker set search_path='' as $$
+declare v_device text; v_existing public.media_metadata; v_type text;
+begin
+  select device_id into v_device from public.storage_nodes where id=p_node_id
+    and user_id=p_user_id and disabled_at is null for share;
+  if v_device is null then raise exception 'active owned node required' using errcode='42501'; end if;
+  v_type := split_part(p_content_type,'/',1);
+  if v_type not in ('video','audio') or p_size not between 1 and 268435456
+    or p_thumbnail_size not between 1 and 2097152
+    or p_playback_size not between 1 and 1073741824
+    or p_playback_type <> (case when v_type='video' then 'video/mp4' else 'audio/mp4' end)
+    or jsonb_typeof(p_info)<>'object' or octet_length(p_info::text)>8192 then
+    raise exception 'invalid media metadata' using errcode='22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_media_id::text,0));
+  select * into v_existing from public.media_metadata where id=p_media_id;
+  if found then
+    if v_existing.user_id<>p_user_id or v_existing.device_id<>v_device
+      or v_existing.original_filename is distinct from p_filename
+      or not exists(select 1 from public.media_objects where media_id=p_media_id
+        and user_id=p_user_id and storage_node_id=p_node_id and kind='original'
+        and sha256=p_original_sha256 and byte_size=p_size and content_type=p_content_type)
+      or not exists(select 1 from public.media_objects where media_id=p_media_id
+        and kind='playback' and sha256=p_playback_sha256 and byte_size=p_playback_size)
+      or not exists(select 1 from public.media_objects where media_id=p_media_id
+        and kind='thumbnail' and sha256=p_thumbnail_sha256 and byte_size=p_thumbnail_size) then
+      raise exception 'upload ID already used' using errcode='23505';
+    end if;
+    return p_media_id;
+  end if;
+  insert into public.media_metadata(id,user_id,device_id,local_file_id,file_type,original_filename,media_info)
+    values(p_media_id,p_user_id,v_device,p_media_id::text,v_type,p_filename,p_info);
+  insert into public.media_objects(user_id,media_id,storage_node_id,kind,object_key,byte_size,content_type,sha256)
+  values
+    (p_user_id,p_media_id,p_node_id,'original',p_media_id,p_size,p_content_type,p_original_sha256),
+    (p_user_id,p_media_id,p_node_id,'thumbnail',gen_random_uuid(),p_thumbnail_size,'image/jpeg',p_thumbnail_sha256),
+    (p_user_id,p_media_id,p_node_id,'playback',gen_random_uuid(),p_playback_size,p_playback_type,p_playback_sha256);
+  return p_media_id;
+end $$;
+revoke all on function public.complete_media_upload(uuid,uuid,uuid,text,bigint,text,text,text,bigint,text,bigint,text,jsonb)
+  from public,anon,authenticated;
+grant execute on function public.complete_media_upload(uuid,uuid,uuid,text,bigint,text,text,text,bigint,text,bigint,text,jsonb)
+  to service_role;
+notify pgrst,'reload schema';
+commit;
+
+-- Migration: 008_local_indexing.sql
+begin;
+alter table public.media_metadata
+  add column ai_request_id uuid,
+  add column ai_options jsonb not null default '{}',
+  add column ai_message text check(length(ai_message)<=200);
+create function public.apply_index_result(p_owner uuid,p_node uuid,p_media uuid,p_request uuid,p_result jsonb)
+returns boolean language plpgsql security invoker set search_path='' as $$
+declare m public.media_metadata; f jsonb;
+begin
+  perform 1 from public.storage_nodes where id=p_node and user_id=p_owner and disabled_at is null for share;
+  if not found then raise exception 'active node required' using errcode='42501'; end if;
+  select * into m from public.media_metadata where id=p_media and user_id=p_owner for update;
+  if not found or m.ai_request_id is distinct from p_request then return false; end if;
+  if not exists(select 1 from public.media_objects where media_id=p_media
+    and user_id=p_owner and storage_node_id=p_node and kind='original') then
+    raise exception 'owned original required' using errcode='42501';
+  end if;
+  if p_result->>'error' is not null then
+    update public.media_metadata set ai_status='failed',ai_message=p_result->>'error' where id=p_media;
+    return true;
+  end if;
+  update public.media_metadata set ai_status='ready',ai_message=null,
+    ai_models=ai_models || coalesce(p_result->'models','{}'),
+    ai_tags=case when jsonb_typeof(p_result->'tags')='array'
+      then array(select jsonb_array_elements_text(p_result->'tags')) else ai_tags end,
+    transcription=coalesce(p_result->>'transcription',transcription)
+    where id=p_media;
+  if jsonb_typeof(p_result->'faces')='array' then
+    if not coalesce((m.ai_options->>'faces')::boolean,false)
+      or jsonb_array_length(p_result->'faces')>100 then
+      raise exception 'face consent required' using errcode='42501';
+    end if;
+    -- Deterministic IDs preserve owner-confirmed names on identical re-indexing.
+    delete from public.face_embeddings where media_id=p_media and user_id=p_owner
+      and id not in(select (value->>'id')::uuid from jsonb_array_elements(p_result->'faces'));
+    for f in select value from jsonb_array_elements(p_result->'faces') loop
+      insert into public.face_embeddings(id,media_id,user_id,embedding,model_id,vector_version)
+        values((f->>'id')::uuid,p_media,p_owner,(f->'embedding')::text::extensions.vector(512),
+               f->>'model_id',(f->>'vector_version')::integer)
+        on conflict(id) do update set embedding=excluded.embedding
+          where face_embeddings.user_id=p_owner and face_embeddings.media_id=p_media;
+    end loop;
+  end if;
+  return true;
+end $$;
+create function public.forget_media_faces(p_owner uuid,p_media uuid)
+returns void language plpgsql security invoker set search_path='' as $$
+begin
+  update public.media_metadata set ai_request_id=null,ai_options=ai_options || '{"faces":false}',
+    ai_status='not_requested' where id=p_media and user_id=p_owner;
+  delete from public.face_embeddings where media_id=p_media and user_id=p_owner;
+end $$;
+revoke all on function public.apply_index_result(uuid,uuid,uuid,uuid,jsonb),
+  public.forget_media_faces(uuid,uuid) from public,anon,authenticated;
+grant execute on function public.apply_index_result(uuid,uuid,uuid,uuid,jsonb),
+  public.forget_media_faces(uuid,uuid) to service_role;
+create function public.named_face_groups(p_owner uuid)
+returns table(person_name text,face_count bigint)
+language sql stable security invoker set search_path='' as $$
+  select f.person_name,count(*) from public.face_embeddings f
+    where f.user_id=p_owner and f.person_name is not null
+    group by f.person_name order by f.person_name limit 200;
+$$;
+revoke all on function public.named_face_groups(uuid) from public,anon,authenticated;
+grant execute on function public.named_face_groups(uuid) to service_role;
+notify pgrst,'reload schema';
+commit;
+

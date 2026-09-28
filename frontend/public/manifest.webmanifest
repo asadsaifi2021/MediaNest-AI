@@ -1,0 +1,14 @@
+{
+  "id": "/",
+  "name": "MediaNest AI",
+  "short_name": "MediaNest",
+  "description": "Your private local media archive",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8f9f5",
+  "theme_color": "#172e29",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

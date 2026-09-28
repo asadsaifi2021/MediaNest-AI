@@ -4,7 +4,7 @@
 
 | Component | Technology | Responsibility |
 | --- | --- | --- |
-| Frontend | React, TypeScript, Vite, React Router, TanStack Query | Responsive gallery, login, search, uploads, playback; PWA later |
+| Frontend | React, TypeScript, Vite, React Router, TanStack Query | Responsive gallery, login, search, uploads, playback; installable production PWA |
 | Metadata API | Python FastAPI | Verify users, enforce ownership, search and sync metadata |
 | Metadata database | Supabase PostgreSQL, pgvector, full-text search | Records, tags, transcripts, vectors, storage references |
 | Identity | Supabase Auth | User login and session tokens |
@@ -48,6 +48,15 @@ not replace per-user file authorization. Tailscale is private network access,
 not a promise that every connection is direct P2P; relays may be needed.
 
 ## AI plan
+
+The first adapters are now implemented in local_storage/ai.py: optional YOLOv8
+object detection, faster-whisper CPU speech transcription, and OpenCV YuNet/SFace
+face extraction with per-file consent. The worker persists job state in local
+SQLite and synchronizes only metadata. See NEXT_STAGE_SETUP.md for activation
+and verification boundaries. AI tags are separate from user tags; face results
+are reviewed/named manually, with no automatic identity assertion.
+Node-authenticated recovery derives ownership from the registered node rather
+than a browser session. Disabled nodes cannot synchronize or serve new reads.
 
 Evaluate YOLO for common objects, a CLIP-style model for broader scene search,
 faster-whisper for transcription, and a licensed face-embedding model.

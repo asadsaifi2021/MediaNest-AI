@@ -64,10 +64,28 @@ export function PhotoUpload({ done }: { done: () => void }) {
     setBusy(true);
     setError("");
     try {
-      if (file.size < 1 || file.size > 20 * 1024 * 1024)
-        throw new Error("Choose a photo no larger than 20 MiB.");
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type))
-        throw new Error("Choose a JPEG, PNG, or WebP photo.");
+      const maximum = file.type.startsWith("image/") ? 20 : 256;
+      if (file.size < 1 || file.size > maximum * 1024 * 1024)
+        throw new Error(`Choose a file no larger than ${maximum} MiB.`);
+      if (
+        ![
+          "image/jpeg",
+          "image/png",
+          "image/webp",
+          "video/mp4",
+          "video/webm",
+          "video/quicktime",
+          "audio/mpeg",
+          "audio/mp4",
+          "audio/wav",
+          "audio/x-wav",
+          "audio/flac",
+          "audio/ogg",
+        ].includes(file.type)
+      )
+        throw new Error(
+          "Unsupported media format. Try JPEG, PNG, WebP, MP4, WebM, MOV, MP3, M4A, WAV, FLAC, or OGG.",
+        );
       const grant = await request<Grant>(
         `/api/v1/storage-nodes/${node || available[0]?.id}/upload-grant`,
         session.access_token,
@@ -84,7 +102,7 @@ export function PhotoUpload({ done }: { done: () => void }) {
       await localFetch(grant, {
         method: "POST",
         body: file,
-        signal: AbortSignal.timeout(180000),
+        signal: AbortSignal.timeout(900000),
         headers: { "Content-Type": file.type },
       });
       await cache.invalidateQueries({ queryKey: ["media"] });
@@ -109,8 +127,10 @@ export function PhotoUpload({ done }: { done: () => void }) {
   return (
     <form onSubmit={submit}>
       <p>
-        One photo at a time, up to 20 MiB. Originals and thumbnails stay on your
-        PC. Only metadata is sent to Supabase.
+        Photos up to 20 MiB; video and audio up to 256 MiB. Originals,
+        thumbnails, and playback copies stay on your PC. Video/audio conversion
+        requires FFmpeg and can take several minutes. Keep this window open
+        until it finishes.
       </p>
       {nodes.isPending && <p role="status">Loading storage registrations…</p>}
       {nodes.error && <p role="alert">{nodes.error.message}</p>}
@@ -133,10 +153,10 @@ export function PhotoUpload({ done }: { done: () => void }) {
         </select>
       </label>
       <label>
-        Photo
+        Media file
         <input
           type="file"
-          accept="image/jpeg,image/png,image/webp"
+          accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/flac,audio/ogg"
           required
           disabled={busy}
           onChange={(e) => {
@@ -154,7 +174,7 @@ export function PhotoUpload({ done }: { done: () => void }) {
         </p>
       )}
       <button className="primary" disabled={busy || !file || !available.length}>
-        {busy ? "Saving photo and thumbnail…" : "Upload photo"}
+        {busy ? "Saving and preparing media…" : "Upload media"}
       </button>
     </form>
   );
@@ -164,6 +184,7 @@ export function useLocalPhoto(
   mediaId: string,
   enabled: boolean,
   kind = "thumbnail",
+  faceId?: string,
 ) {
   const { session } = useAuth();
   const [state, setState] = useState<{ url?: string; error?: string }>({});
@@ -177,7 +198,9 @@ export function useLocalPhoto(
     void (async () => {
       try {
         const grant = await request<Grant>(
-          `/api/v1/media/${mediaId}/access-grant?kind=${kind}`,
+          faceId
+            ? `/api/v1/faces/${faceId}/preview-grant`
+            : `/api/v1/media/${mediaId}/access-grant?kind=${kind}`,
           session.access_token,
           { method: "POST", signal: controller.signal },
         );
@@ -201,7 +224,7 @@ export function useLocalPhoto(
       clearTimeout(timeout);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [mediaId, enabled, kind, session?.access_token, session?.user.id]);
+  }, [mediaId, enabled, kind, faceId, session?.access_token, session?.user.id]);
   return state;
 }
 
